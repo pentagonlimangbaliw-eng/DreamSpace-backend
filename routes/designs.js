@@ -1,8 +1,9 @@
 import express from 'express';
 import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
+import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import User from '../models/User.js';
 import Design from '../models/Design.js';
 import Item from '../models/Item.js';
@@ -10,17 +11,17 @@ import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// === Directory Setup ===
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const uploadDir = path.join(__dirname, '../public/uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-// === Multer setup for manual uploads ===
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
+// === Cloudinary Configuration ===
+// Make sure these are set in your .env file
+// CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// === Multer setup (optional for manual file uploads) ===
+const storage = multer.memoryStorage(); // we’ll upload directly from buffer
 const upload = multer({ storage });
 
 // === Default user for Unity uploads ===
@@ -55,40 +56,50 @@ router.post('/design-saved', express.json({ limit: '50mb' }), async (req, res) =
       return res.status(400).json({ message: 'Invalid JSON in scene', error: err.message });
     }
 
-    // Save design in MongoDB first
+    // Save base design in MongoDB first
     const design = await Design.create({
       userId: OLIRY_ID,
       roomType: parsed.roomType || parsed.room || 'Unknown',
-      items: parsed.items?.map(i => ({
-        itemId: i.productId,
-        position: { x: i.position[0], y: i.position[1], z: i.position[2] },
-        rotation: { x: i.rotation[0], y: i.rotation[1], z: i.rotation[2] },
-        scale: { x: i.scale?.[0] || 1, y: i.scale?.[1] || 1, z: i.scale?.[2] || 1 },
-      })) || [],
+      items:
+        parsed.items?.map(i => ({
+          itemId: i.productId,
+          position: { x: i.position[0], y: i.position[1], z: i.position[2] },
+          rotation: { x: i.rotation[0], y: i.rotation[1], z: i.rotation[2] },
+          scale: {
+            x: i.scale?.[0] || 1,
+            y: i.scale?.[1] || 1,
+            z: i.scale?.[2] || 1,
+          },
+        })) || [],
       screenshotUrl: null,
     });
+
     console.log('✅ Design saved in MongoDB:', design._id);
 
-    // Save screenshot if provided
+    // === Upload screenshot to Cloudinary ===
     let screenshotUrl = null;
     if (screenshot) {
-      const buffer = Buffer.from(screenshot, 'base64');
-      const filename = `design_${design._id}.png`;
-      const filePath = path.join(uploadDir, filename);
-      fs.writeFileSync(filePath, buffer);
-      const BASE_URL = process.env.BASE_URL || 'https://dreamspace-backend.onrender.com';
-design.screenshotUrl = `${BASE_URL}/uploads/${filename}`;
+      const uploadResponse = await cloudinary.uploader.upload(
+        `data:image/png;base64,${screenshot}`,
+        {
+          folder: 'dreamspace/designs',
+          public_id: `design_${design._id}`,
+          overwrite: true,
+          resource_type: 'image',
+        }
+      );
+
+      screenshotUrl = uploadResponse.secure_url;
+      design.screenshotUrl = screenshotUrl;
       await design.save();
-      screenshotUrl = design.screenshotUrl;
-      console.log('✅ Screenshot saved:', filename);
+      console.log('✅ Screenshot uploaded to Cloudinary:', screenshotUrl);
     }
 
-    // Return proper JSON for Unity
     res.status(201).json({
       message: 'Design saved successfully',
       designId: design._id,
       screenshotUrl,
-      design
+      design,
     });
   } catch (err) {
     console.error('❌ Unity upload failed:', err);
@@ -109,23 +120,9 @@ router.get('/', async (req, res) => {
 
     const designs = await query;
 
-    // ✅ Build base URL dynamically from request
-    const BASE_URL = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-
     const designsWithTotal = designs.map(d => {
       const totalPrice = d.items.reduce((sum, i) => sum + (i.itemId?.price || 0), 0);
-
-      // ✅ Make screenshot URL absolute if needed
-      let screenshotUrl = d.screenshotUrl;
-      if (screenshotUrl && !screenshotUrl.startsWith('http')) {
-        screenshotUrl = `${BASE_URL}${screenshotUrl}`;
-      }
-
-      return { 
-        ...d.toObject(), 
-        totalPrice, 
-        screenshotUrl 
-      };
+      return { ...d.toObject(), totalPrice };
     });
 
     res.json(designsWithTotal);
