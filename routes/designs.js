@@ -12,16 +12,14 @@ import { protect } from '../middleware/authMiddleware.js';
 const router = express.Router();
 
 // === Cloudinary Configuration ===
-// Make sure these are set in your .env file
-// CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// === Multer setup (optional for manual file uploads) ===
-const storage = multer.memoryStorage(); // we’ll upload directly from buffer
+// === Multer setup (optional, only for direct buffer uploads) ===
+const storage = multer.memoryStorage(); 
 const upload = multer({ storage });
 
 // === Default user for Unity uploads ===
@@ -42,7 +40,7 @@ router.post('/', protect, async (req, res) => {
 
 /* ------------------------------------------------------------------
    🧠 UNITY UPLOAD: screenshot + scene
-   Endpoint: POST /callback/design-saved
+   Endpoint: POST /design-saved
    ------------------------------------------------------------------ */
 router.post('/design-saved', express.json({ limit: '50mb' }), async (req, res) => {
   try {
@@ -56,7 +54,7 @@ router.post('/design-saved', express.json({ limit: '50mb' }), async (req, res) =
       return res.status(400).json({ message: 'Invalid JSON in scene', error: err.message });
     }
 
-    // Save base design in MongoDB first
+    // Save base design in MongoDB
     const design = await Design.create({
       userId: OLIRY_ID,
       roomType: parsed.roomType || parsed.room || 'Unknown',
@@ -77,7 +75,6 @@ router.post('/design-saved', express.json({ limit: '50mb' }), async (req, res) =
     console.log('✅ Design saved in MongoDB:', design._id);
 
     // === Upload screenshot to Cloudinary ===
-    let screenshotUrl = null;
     if (screenshot) {
       const uploadResponse = await cloudinary.uploader.upload(
         `data:image/png;base64,${screenshot}`,
@@ -89,16 +86,15 @@ router.post('/design-saved', express.json({ limit: '50mb' }), async (req, res) =
         }
       );
 
-      screenshotUrl = uploadResponse.secure_url;
-      design.screenshotUrl = screenshotUrl;
+      design.screenshotUrl = uploadResponse.secure_url;
       await design.save();
-      console.log('✅ Screenshot uploaded to Cloudinary:', screenshotUrl);
+      console.log('✅ Screenshot uploaded to Cloudinary:', design.screenshotUrl);
     }
 
     res.status(201).json({
       message: 'Design saved successfully',
       designId: design._id,
-      screenshotUrl,
+      screenshotUrl: design.screenshotUrl,
       design,
     });
   } catch (err) {
