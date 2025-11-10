@@ -41,6 +41,9 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // ✅ Serve any static files in /public (CSS, JS, etc.)
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.use('/api', authRoutes); // <-- add this
+console.log('✅ Registered routes: /api (auth)');
+
 // === Routes ===
 app.use('/api/catalog', catalogRoutes);
 console.log('✅ Registered routes: /api/catalog');
